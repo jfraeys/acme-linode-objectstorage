@@ -41,10 +41,10 @@ with Read/Write permission to Object Storage.
 
 3. Store your Linode API token securely:
     - Create a secrets directory in your project.
-    - Inside the secrets directory, create a text file named linode_token.txt and add your Linode API token:
+    - Inside the secrets directory, create a text file named LINODE_TOKEN and add your Linode API token:
 
     ```bash
-    YOUR_LINODE_TOKEN_HERE
+    YOUR_LINODE_TOKENE
     ```
 
 4. Provision a certificate for this bucket:
