@@ -16,11 +16,7 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-<<<<<<< HEAD
     python_requires=">=3.10",
-=======
-    python_requires=">=3.6",
->>>>>>> 1566a15 (refactored code)
     install_requires=[
         "requests",
         "cryptography",
