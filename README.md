@@ -5,7 +5,7 @@ with a [Let's Encrypt](https://letsencrypt.org/) certificate.
 
 ## Requirements
 
-Requires [Python 3.8+](https://www.python.org) with [Cryptography](https://github.com/pyca/cryptography)
+Requires [Python 3.11+](https://www.python.org) with [Cryptography](https://github.com/pyca/cryptography)
 and [Requests](https://github.com/psf/requests).
 
 ```
@@ -39,10 +39,17 @@ The bucket name and DNS name **must** be identical.
 2. Create a Linode API [Personal Access Token](https://cloud.linode.com/profile/tokens)
 with Read/Write permission to Object Storage.
 
-3. Provision a certificate for this bucket:
+3. Store your Linode API token securely:
+    - Create a secrets directory in your project.
+    - Inside the secrets directory, create a text file named linode_token.txt and add your Linode API token:
 
     ```bash
-    export LINODE_TOKEN=...
+    YOUR_LINODE_TOKEN_HERE
+    ```
+
+4. Provision a certificate for this bucket:
+
+    ```bash
     python3 -m acme_linode_objectstorage -k account_key.pem my.bucket.domain
     ```
 
