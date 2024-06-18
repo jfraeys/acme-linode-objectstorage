@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-from src import acme_utils, linode_utils
+from acme_linode_objectstorage import acme, linode
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
@@ -44,33 +44,33 @@ def generate_private_key(
 
 
 def generate_csr(
-    s3_domain: str,
+    domain: str,
     private_key: rsa.RSAPrivateKeyWithSerialization,
 ) -> x509.CertificateSigningRequest:
     """
     Generate a Certificate Signing Request (CSR) for the specified S3 domain.
 
     Args:
-    - s3_domain (str): S3 domain for which the CSR is generated.
+    - domain (str): S3 domain for which the CSR is generated.
     - private_key (rsa.RSAPrivateKeyWithSerialization): RSA private key.
 
     Returns:
     - x509.CertificateSigningRequest: Generated CSR.
     """
-    logging.info("Creating CSR for %s", s3_domain)
+    logging.info("Creating CSR for %s", domain)
     return (
         x509.CertificateSigningRequestBuilder()
         .subject_name(
             x509.Name(
                 [
-                    x509.NameAttribute(NameOID.COMMON_NAME, s3_domain),
+                    x509.NameAttribute(NameOID.COMMON_NAME, domain),
                 ]
             )
         )
         .add_extension(
             x509.SubjectAlternativeName(
                 [
-                    x509.DNSName(s3_domain),
+                    x509.DNSName(domain),
                 ]
             ),
             critical=False,
@@ -80,18 +80,18 @@ def generate_csr(
 
 
 def register_acme_account(
-    acme_client: acme_utils.AcmeClient,
+    acme_client: acme.AcmeClient,
     acme_agree_tos: bool,
-) -> acme_utils.Account | int:
+) -> acme.Account | None:
     """
     Register an ACME account with the specified client.
 
     Args:
-    - acme_client (acme_utils.AcmeClient): ACME client for registration.
+    - acme_client (acme.AcmeClient): ACME client for registration.
     - acme_agree_tos (bool): Whether to agree to the terms of service.
 
     Returns:
-    - Union[acme_utils.Account, int]: ACME account or an error code.
+    - Union[acme.Account, int]: ACME account or an error code.
     """
     logging.info("Registering account")
     try:
@@ -100,25 +100,25 @@ def register_acme_account(
         )
     except requests.HTTPError as e:
         logging.error(f"Failed to create account: {e.response.text}")
-        return 1
+        return None
     logging.debug("account: %s", account)
 
     return account
 
 
 def register_order(
-    acme_client: acme_utils.AcmeClient,
+    acme_client: acme.AcmeClient,
     domains: list[str],
-) -> acme_utils.Order | int:
+) -> acme.Order | None:
     """
     Register a new order for the specified domains.
 
     Args:
-    - acme_client (acme_utils.AcmeClient): ACME client for order registration.
+    - acme_client (acme.AcmeClient): ACME client for order registration.
     - domains (list[str]): List of domain names.
 
     Returns:
-    - acme_utils.Order | None: ACME order or None if failed.
+    - acme.Order | None: ACME order or None if failed.
     """
     logging.info("Creating new order for %s", domains)
     try:
@@ -127,11 +127,11 @@ def register_order(
         return order
     except requests.HTTPError as e:
         logging.error(f"Failed to create order: {e.response.text}")
-        return 1
+        return None
 
 
 def _create_challenge_request_url(
-    object_storage: linode_utils.LinodeObjectStorageClient,
+    object_storage: linode.LinodeObjectStorageClient,
     cluster: str,
     domain: str,
     obj_name: str,
@@ -159,7 +159,7 @@ def _create_challenge_request_url(
 
 
 def _delete_challenge_request_url(
-    object_storage: linode_utils.LinodeObjectStorageClient,
+    object_storage: linode.LinodeObjectStorageClient,
     cluster: str,
     domain: str,
     obj_name: str,
@@ -227,9 +227,7 @@ def _validate_challenge_response(domain: str, obj_name: str) -> int:
     return 0
 
 
-def _respond_to_challenge(
-    challenge: acme_utils.Challenge, account: acme_utils.Account
-) -> int:
+def _respond_to_challenge(challenge: acme.Challenge, account: acme.Account) -> int:
     """
     Respond to the challenge and poll until it's not in the "processing" state.
 
@@ -255,7 +253,7 @@ def _respond_to_challenge(
 
 
 def _cleanup_challenge(
-    object_storage: linode_utils.LinodeObjectStorageClient,
+    object_storage: linode.LinodeObjectStorageClient,
     cluster: str,
     domain: str,
     obj_name: str,
@@ -285,11 +283,11 @@ def _cleanup_challenge(
 
 
 def create_challenge_resource(
-    object_storage: linode_utils.LinodeObjectStorageClient,
+    object_storage: linode.LinodeObjectStorageClient,
     cluster: str,
     domain: str,
-    challenge: acme_utils.Challenge,
-    account: acme_utils.Account,
+    challenge: acme.Challenge,
+    account: acme.Account,
 ) -> int:
     """
     Create a challenge resource for ACME authorization.
@@ -325,7 +323,7 @@ def create_challenge_resource(
     return 0
 
 
-def _poll_order_until_not(order: acme_utils.Orderi, step: dict) -> int:
+def _poll_order_until_not(order: acme.Order, step: dict) -> int:
     """
     Poll the ACME order until it is no longer in the 'pending' state.
 
@@ -344,9 +342,7 @@ def _poll_order_until_not(order: acme_utils.Orderi, step: dict) -> int:
     return 0
 
 
-def _finalize_order(
-    order: acme_utils.Order, csr: x509.CertificateSigningRequest
-) -> int:
+def _finalize_order(order: acme.Order, csr: x509.CertificateSigningRequest) -> int:
     """
     Finalize an ACME order with the provided CSR.
 
@@ -372,7 +368,7 @@ def _finalize_order(
     return 0
 
 
-def _get_certificate(order: acme_utils.Order) -> str:
+def _get_certificate(order: acme.Order) -> str:
     """
     Retrieve the certificate associated with the finalized ACME order.
 
@@ -392,7 +388,7 @@ def _get_certificate(order: acme_utils.Order) -> str:
         raise
 
 
-def finalize_order(order: acme_utils.Order, csr: x509.CertificateSigningRequest) -> str:
+def finalize_order(order: acme.Order, csr: x509.CertificateSigningRequest) -> str:
     """
     Finalize an ACME order with the provided CSR.
 
@@ -419,7 +415,7 @@ def finalize_order(order: acme_utils.Order, csr: x509.CertificateSigningRequest)
 
 
 def update_certificates(
-    object_storage: linode_utils.LinodeObjectStorageClient,
+    object_storage: linode.LinodeObjectStorageClient,
     cluster: str,
     domain: str,
     private_key: rsa.RSAPrivateKeyWithSerialization,
@@ -429,7 +425,7 @@ def update_certificates(
     Update SSL certificates on the object storage.
 
     Args:
-    - object_storage (linode_utils.LinodeObjectStorageClient): Object storage client.
+    - object_storage (linode.LinodeObjectStorageClient): Object storage client.
     - args (argparse.Namespace): Command-line arguments.
     - private_key (rsa.RSAPrivateKeyWithSerialization): RSA private key.
     - certificate (str): SSL certificate.
@@ -461,20 +457,20 @@ def update_certificates(
 
 
 def perform_authorizations(
-    object_storage: "linode_utils.LinodeObjectStorageClient",
+    object_storage: "linode.LinodeObjectStorageClient",
     domain: str,
     cluster: str,
-    order: acme_utils.Order,
-    account: acme_utils.Account,
+    order: acme.Order,
+    account: acme.Account,
 ) -> int:
     """
     Perform authorizations for an ACME order.
 
     Args:
-    - object_storage (linode_utils.LinodeObjectStorageClient): Object storage client.
+    - object_storage (linode.LinodeObjectStorageClient): Object storage client.
     - args (argparse.Namespace): Command-line arguments.
-    - order (acme_utils.Order): ACME order.
-    - account (acme_utils.Account): ACME account.
+    - order (acme.Order): ACME order.
+    - account (acme.Account): ACME account.
 
     Returns:
     - int | None: Error code or None if successful.
@@ -496,31 +492,31 @@ def perform_authorizations(
     return 0
 
 
-def register_and_update_certs(
-    acme: acme_utils.AcmeClient,
-    object_storage: linode_utils.LinodeObjectStorageClient,
+def register_and_update_cert(
+    acme: acme.AcmeClient,
+    object_storage: linode.LinodeObjectStorageClient,
     cluster: str,
-    domain: str,
+    domains: str,
     csr: x509.CertificateSigningRequest,
     private_key: rsa.RSAPrivateKeyWithSerialization,
-    account: acme_utils.Account,
+    account: acme.Account,
 ) -> int:
     """
     Registers an ACME account, performs authorizations, finalizes an order, and updates certificates.
 
     Args:
-        acme (acme_utils.AcmeClient): The ACME client for interaction.
-        object_storage (linode_utils.LinodeObjectStorageClient): Object storage client.
+        acme (acme.AcmeClient): The ACME client for interaction.
+        object_storage (linode.LinodeObjectStorageClient): Object storage client.
         args (argparse.Namespace): Command-line arguments.
         csr (x509.CertificateSigningRequest): Certificate Signing Request for the order.
         private_key (rsa.RSAPrivateKeyWithSerialization): RSA private key for certificate generation.
-        account (acme_utils.Account): ACME account.
+        account (acme.Account): ACME account.
 
     Returns:
         int: 0 if successful, 1 if any step fails.
     """
 
-    order = acme.new_order([domain])
+    order = acme.new_order([domains])
 
     if perform_authorizations(object_storage, cluster, domain, order, account) == 1:
         return 1

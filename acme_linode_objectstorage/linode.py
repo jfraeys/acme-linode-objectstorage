@@ -4,7 +4,7 @@ Linode API client.
 
 See https://www.linode.com/docs/api/.
 """
-from typing import Any, Optional
+from typing import Any
 
 from urllib.parse import quote, urljoin
 
@@ -34,14 +34,14 @@ class LinodeObjectStorageClient:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.http.close()
 
-    def buckets(
+    def list_buckets(
         self,
-        cluster: Optional[str],
-        created: Optional[str],
-        hostname: Optional[str],
-        label: Optional[str],
-        objects: Optional[int],
-        size: Optional[int],
+        cluster: str = "",
+        created: str = "",
+        hostname: str = "",
+        label: str = "",
+        objects: str = "",
+        size: str = "",
         page: int = 1,  # Default to the first page
     ) -> list[dict[str, Any]]:
         """
@@ -61,24 +61,26 @@ class LinodeObjectStorageClient:
         """
         all_buckets: list[dict[str, Any]] = []
 
+        # Build the query parameters based on provided values
+        params = {
+            "page": page,
+            "cluster": cluster,
+            "created": created,
+            "hostname": hostname,
+            "label": label,
+            "objects": objects,
+            "size": size,
+        }
+
+        # Remove None values to avoid unnecessary parameters
+        params = {key: value for key, value in params.items() if value}
+
         while True:
-            # Build the query parameters based on provided values
-            params = {
-                "page": page,
-                "cluster": cluster,
-                "created": created,
-                "hostname": hostname,
-                "label": label,
-                "objects": objects,
-                "size": size,
-            }
-
-            # Remove None values to avoid unnecessary parameters
-            params = {key: value for key, value in params.items() if value}
-
             # Make a request with the current parameters
             r = self.http.get(
-                urljoin(LINODE_API, "v4/object-storage/buckets/"), params=params
+                urljoin(LINODE_API, "v4/object-storage/buckets/"),
+                params=params,
+                auth=self.http.auth,
             )
             r.raise_for_status()
 
@@ -96,7 +98,7 @@ class LinodeObjectStorageClient:
                 break  # Break the loop if no more items are available or reached the last page
 
             # Increment the page for the next page of results
-            page += 1
+            params.update({"page": page + 1})
 
         return all_buckets
 
@@ -220,25 +222,29 @@ class LinodeObjectStorageClient:
 
         return "ssl" in r
 
-    # def create_ssl(self, cluster: str, bucket: str, certificate: str, private_key: str) -> None:
-    #     """
-    #     Creates SSL configuration for the specified bucket.
-    #
-    #     Args:
-    #         cluster (str): The cluster to which the bucket belongs.
-    #         bucket (str): The name of the bucket.
-    #         certificate (str): The SSL certificate.
-    #         private_key (str): The private key corresponding to the certificate.
-    #
-    #     Returns:
-    #         None
-    #     """
-    #     data = {'certificate': certificate, 'private_key': private_key}
-    #
-    #     url = urljoin(LINODE_API,
-    #                   f'v4/object-storage/buckets/{quote(cluster)}/{quote(bucket)}/ssl')
-    #     r = self.http.post(url, json=data)
-    #     r.raise_for_status()
+    def create_ssl(
+        self, cluster: str, bucket: str, certificate: str, private_key: str
+    ) -> None:
+        """
+        Creates SSL configuration for the specified bucket.
+
+        Args:
+            cluster (str): The cluster to which the bucket belongs.
+            bucket (str): The name of the bucket.
+            certificate (str): The SSL certificate.
+            private_key (str): The private key corresponding to the certificate.
+
+        Returns:
+            None
+        """
+        data = {"certificate": certificate, "private_key": private_key}
+
+        url = urljoin(
+            LINODE_API,
+            f"v4/object-storage/buckets/{quote(cluster)}/{quote(bucket)}/ssl",
+        )
+        r = self.http.post(url, json=data)
+        r.raise_for_status()
 
     def delete_ssl(self, cluster: str, bucket: str) -> bool:
         url = urljoin(

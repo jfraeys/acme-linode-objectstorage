@@ -96,8 +96,11 @@ class AcmeClient:
     """Client for interacting with ACME (Automated Certificate Management Environment) server."""
 
     DIRECTORY_URL = "https://acme-v02.api.letsencrypt.org/directory"
+    TEST_DIRECTORY_URL = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
-    def __init__(self, account_key: rsa.RSAPrivateKeyWithSerialization):
+    def __init__(
+        self, account_key: rsa.RSAPrivateKeyWithSerialization, dry_run: bool = False
+    ):
         """
         Initialize the AcmeClient.
 
@@ -106,6 +109,7 @@ class AcmeClient:
         """
         self.http = requests.Session()
         self.account_key = account_key
+        self.dry_run = dry_run
 
         self._directory = None
         self._nonce = None
@@ -186,7 +190,10 @@ class AcmeClient:
         - str | None : Resource URL or None if not found.
         """
         if not self._directory:
-            r = self.http.get(self.DIRECTORY_URL)
+            if self.dry_run:
+                r = self.http.get(self.TEST_DIRECTORY_URL)
+            else:
+                r = self.http.get(self.DIRECTORY_URL)
             r.raise_for_status()
 
             self._directory = r.json()
@@ -252,6 +259,10 @@ class AcmeClient:
         }
 
         headers = {"Content-Type": "application/jose+json"}
+
+        print(data)
+        print(headers)
+        print(url)
 
         r = self.http.post(url, headers=headers, json=data)
         r.raise_for_status()
