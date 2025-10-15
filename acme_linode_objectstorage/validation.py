@@ -114,12 +114,10 @@ def parse_certificate_chain(certificate: str) -> list[x509.Certificate]:
             + "-----END CERTIFICATE-----"
         )
         try:
-            cert_obj = x509.load_pem_x509_certificate(
-                cert_pem.encode(), default_backend()
-            )
+            cert_obj = x509.load_pem_x509_certificate(cert_pem.encode(), default_backend())
             certificates.append(cert_obj)
         except Exception as e:
-            raise ValueError(f"Failed to parse certificate {i}: {e}")
+            raise ValueError(f"Failed to parse certificate {i}: {e}") from e
 
     return certificates
 
@@ -141,9 +139,7 @@ def get_certificate_domains(cert: x509.Certificate) -> tuple[str | bytes, list[s
     # Get SANs
     sans: list[str] = []
     try:
-        san_ext = cert.extensions.get_extension_for_oid(
-            ExtensionOID.SUBJECT_ALTERNATIVE_NAME
-        )
+        san_ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
         san_value = san_ext.value
 
         if isinstance(san_value, x509.SubjectAlternativeName):
@@ -154,9 +150,7 @@ def get_certificate_domains(cert: x509.Certificate) -> tuple[str | bytes, list[s
     return (cn, sans)
 
 
-def verify_certificate_covers_domain(
-    cert: x509.Certificate, domain: str
-) -> tuple[bool, str]:
+def verify_certificate_covers_domain(cert: x509.Certificate, domain: str) -> tuple[bool, str]:
     """
     Verify that a certificate covers a specific domain.
 
@@ -174,14 +168,11 @@ def verify_certificate_covers_domain(
 
     return (
         False,
-        f"Certificate does not cover domain '{domain}'. "
-        f"Certificate is for: CN={cn}, SANs={sans}",
+        f"Certificate does not cover domain '{domain}'. Certificate is for: CN={cn}, SANs={sans}",
     )
 
 
-def validate_certificate_chain(
-    certificate: str, expected_domain: str
-) -> tuple[bool, str, int]:
+def validate_certificate_chain(certificate: str, expected_domain: str) -> tuple[bool, str, int]:
     """
     Validate a complete certificate chain.
 
@@ -209,9 +200,7 @@ def validate_certificate_chain(
 
         # Validate the leaf certificate (first one)
         leaf_cert = certificates[0]
-        is_valid, error_msg = verify_certificate_covers_domain(
-            leaf_cert, expected_domain
-        )
+        is_valid, error_msg = verify_certificate_covers_domain(leaf_cert, expected_domain)
 
         if not is_valid:
             return (False, error_msg, cert_count)

@@ -1,7 +1,0 @@
--r requirements.txt
-
-debugpy >= 1.8.12
-pytest >= 8.3.5
-ruff >= 0.9.9
-requests-mock >= 1.11.0
-

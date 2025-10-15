@@ -132,9 +132,7 @@ def private_key_to_pem(private_key):
     return pem_bytes.decode("ascii")
 
 
-def get_env_secrets(
-    name: str, path: Path = Path(Path.cwd() / "secrets/")
-) -> str | None:
+def get_env_secrets(name: str, path: Path = Path(Path.cwd() / "secrets/")) -> str | None:
     """
     Get an environment variable from either a file in the project secrets directory or an environment variable.
 
@@ -155,7 +153,5 @@ def get_env_secrets(
         logging.debug(f"Loaded secret from file: {path}/{name}")
         return secret
     elif not secret and not (path / name).exists():
-        raise EnvironmentError(
-            f"Environment variable and/or secret file variable: {path}/{name} not found"
-        )
+        raise OSError(f"Environment variable and/or secret file variable: {path}/{name} not found")
     return secret

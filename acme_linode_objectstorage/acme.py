@@ -97,7 +97,9 @@ class AcmeClient:
         self._key_id = r.headers["Location"]
         return models.Account(self, self._key_id, r.json())
 
-    def new_order(self, domain: str, additional_domains: list[str] | None = None) -> models.Order | None:
+    def new_order(
+        self, domain: str, additional_domains: list[str] | None = None
+    ) -> models.Order | None:
         """
         Create a new order for the specified domains.
 
@@ -124,7 +126,7 @@ class AcmeClient:
             for additional_domain in additional_domains:
                 if additional_domain not in all_domains:
                     all_domains.append(additional_domain)
-        
+
         payload = {"identifiers": [{"type": "dns", "value": d} for d in all_domains]}
 
         logging.debug(f"Creating new order with URL {url} and payload: {payload}")
@@ -138,9 +140,7 @@ class AcmeClient:
 
         # Check if the response status code is successful
         if response.status_code != 201:
-            logging.error(
-                f"Failed to create new order: {response.status_code} - {response.text}"
-            )
+            logging.error(f"Failed to create new order: {response.status_code} - {response.text}")
             return None
 
         # Return the Order object on success
@@ -197,12 +197,8 @@ class AcmeClient:
 
         # Ensure the key ID is now set
         if not self._key_id:
-            logging.error(
-                "Key ID is still not set after attempting to create a new account."
-            )
-            raise ValueError(
-                "Key ID is not available, unable to make a signed request."
-            )
+            logging.error("Key ID is still not set after attempting to create a new account.")
+            raise ValueError("Key ID is not available, unable to make a signed request.")
 
         logging.debug(f"Using key ID: {self._key_id}")
 
@@ -253,14 +249,12 @@ class AcmeClient:
             logging.debug(f"Dumped payload (b64url): {dumped_payload}")
 
         # Create signing input string
-        signing_input = f"{protected}.{dumped_payload}".encode("utf-8")
+        signing_input = f"{protected}.{dumped_payload}".encode()
 
         # Generate signature using account key
         try:
             signature = utils.b64url(
-                self.account_key.sign(
-                    signing_input, padding.PKCS1v15(), hashes.SHA256()
-                )
+                self.account_key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
             )
             # Log the generated signature
             logging.debug(f"Generated signature: {signature}")
@@ -307,9 +301,7 @@ class AcmeClient:
                 try:
                     err = response.json()
                     if err.get("type") == "urn:ietf:params:acme:error:badNonce":
-                        logging.warning(
-                            "badNonce received — retrying once with new nonce"
-                        )
+                        logging.warning("badNonce received — retrying once with new nonce")
                         self._new_nonce()
                         continue
                 except Exception:

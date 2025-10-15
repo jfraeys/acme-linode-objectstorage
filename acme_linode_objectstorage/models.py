@@ -20,9 +20,7 @@ class Resource:
     POLL_INTERVAL = 1
     MAX_RETRIES = 5
 
-    def __init__(
-        self, client: "AcmeClient", url: str, data: dict[str, Any] | None = None
-    ):
+    def __init__(self, client: "AcmeClient", url: str, data: dict[str, Any] | None = None):
         self.client = client
         self.url = url
         self._data: dict[str, Any] | None = data
@@ -59,7 +57,7 @@ class Resource:
                 return {}
             return r.json()
         except ValueError:
-            raise RuntimeError(f"Invalid JSON response: {r.text}")
+            raise RuntimeError(f"Invalid JSON response: {r.text}") from None
 
     def update(self) -> None:
         """Update the resource information with retries."""
@@ -134,9 +132,7 @@ class Resource:
 class Account(Resource):
     """Represents an ACME account resource."""
 
-    def __init__(
-        self, client: "AcmeClient", url: str, data: dict[str, Any] | None = None
-    ):
+    def __init__(self, client: "AcmeClient", url: str, data: dict[str, Any] | None = None):
         super().__init__(client, url, data)
 
     @property
@@ -163,9 +159,7 @@ class Account(Resource):
 class Challenge(Resource):
     """Class representing an ACME challenge."""
 
-    def __init__(
-        self, client: "AcmeClient", url: str, data: dict[str, Any] | None = None
-    ):
+    def __init__(self, client: "AcmeClient", url: str, data: dict[str, Any] | None = None):
         super().__init__(client, url, data)
 
     @property
@@ -188,9 +182,7 @@ class Challenge(Resource):
 class Authorization(Resource):
     """Class representing an ACME authorization."""
 
-    def __init__(
-        self, client: "AcmeClient", url: str, data: dict[str, Any] | None = None
-    ):
+    def __init__(self, client: "AcmeClient", url: str, data: dict[str, Any] | None = None):
         super().__init__(client, url, data)
 
     @property
@@ -219,9 +211,7 @@ class Authorization(Resource):
 class Order(Resource):
     """Class representing an ACME order."""
 
-    def __init__(
-        self, client: "AcmeClient", url: str, data: dict[str, Any] | None = None
-    ):
+    def __init__(self, client: "AcmeClient", url: str, data: dict[str, Any] | None = None):
         super().__init__(client, url, data)
 
     @property
@@ -230,10 +220,7 @@ class Order(Resource):
         if not self._data:
             raise ValueError("Order data is None")
 
-        return [
-            Authorization(self.client, url)
-            for url in self._data.get("authorizations", [])
-        ]
+        return [Authorization(self.client, url) for url in self._data.get("authorizations", [])]
 
     def finalize(self, csr: x509.CertificateSigningRequest) -> None:
         """

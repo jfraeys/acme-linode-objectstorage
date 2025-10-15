@@ -1,4 +1,0 @@
-cryptography >=44.0.2
-requests >= 2.32.4
-dnspython >= 2.7.0
-

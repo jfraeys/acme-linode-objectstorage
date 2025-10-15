@@ -152,9 +152,7 @@ class AcmeLinodeManager:
     def acme_client(self) -> acme.AcmeClient:
         """Get or create ACME client."""
         if self._acme_client is None:
-            self._acme_client = acme.AcmeClient(
-                account_key=self.account_key, dry_run=self.dry_run
-            )
+            self._acme_client = acme.AcmeClient(account_key=self.account_key, dry_run=self.dry_run)
             self._acme_client.add_headers({"User-Agent": self.user_agent})
         return self._acme_client
 
@@ -190,9 +188,9 @@ class AcmeLinodeManager:
             return key
 
         except FileNotFoundError:
-            raise ValueError(f"Account key file not found: {path}")
+            raise ValueError(f"Account key file not found: {path}") from None
         except Exception as e:
-            raise ValueError(f"Failed to load account key: {e}")
+            raise ValueError(f"Failed to load account key: {e}") from e
 
     def _discover_bucket_from_dns(self, domain: str) -> tuple[str | None, str | None]:
         """
@@ -222,9 +220,7 @@ class AcmeLinodeManager:
                 if match:
                     bucket_label = match.group(1)
                     cluster = match.group(2)
-                    logger.info(
-                        f"Discovered bucket '{bucket_label}' in cluster '{cluster}'"
-                    )
+                    logger.info(f"Discovered bucket '{bucket_label}' in cluster '{cluster}'")
                     return (bucket_label, cluster)
 
             logger.warning(f"No Linode Object Storage CNAME found for: {domain}")
@@ -247,9 +243,7 @@ class AcmeLinodeManager:
         buckets = self.object_storage.list_buckets()
         return next((b for b in buckets if b.get("label") == label), None)
 
-    def _resolve_bucket(
-        self, domain: str, bucket_label: str | None = None
-    ) -> dict[str, Any]:
+    def _resolve_bucket(self, domain: str, bucket_label: str | None = None) -> dict[str, Any]:
         """
         Resolve bucket information for a domain.
 
@@ -329,9 +323,7 @@ class AcmeLinodeManager:
 
             # Resolve bucket
             bucket = self._resolve_bucket(domain, bucket_label)
-            logger.debug(
-                f"Resolved bucket: {bucket['label']} in cluster {bucket['cluster']}"
-            )
+            logger.debug(f"Resolved bucket: {bucket['label']} in cluster {bucket['cluster']}")
 
             # Generate private key and CSR
             logger.debug(f"Generating {self.key_size}-bit private key")
@@ -348,9 +340,7 @@ class AcmeLinodeManager:
             if csr_domains:
                 logger.debug(f"Including additional domains in SAN: {csr_domains}")
 
-            csr = generate_csr(
-                domain, private_key, csr_domains if csr_domains else None
-            )
+            csr = generate_csr(domain, private_key, csr_domains if csr_domains else None)
 
             # Register and update certificate
             logger.info("Obtaining certificate from ACME server")
