@@ -1,537 +1,155 @@
-#!/usr/bin/env python3
+"""
+High-level SSL/TLS certificate management for Linode Object Storage.
+"""
+
 import logging
-from urllib.parse import quote, urlunsplit
+from typing import Any
 
 import requests
-import requests.auth
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
 
-from acme_linode_objectstorage import acme, linode
+from acme_linode_objectstorage import acme, linode, models
+from acme_linode_objectstorage.certificate import finalize_order, upload_certificate
+from acme_linode_objectstorage.challenge import (
+    find_supported_challenge,
+    process_challenge,
+)
+from acme_linode_objectstorage.validation import validate_bucket_for_ssl
 
-logging.getLogger(__name__).addHandler(logging.NullHandler())
-
-PUBLIC_EXPONENT = 65537
-SUPPORTED_CHALLENGES = ["http-01"]
-
-
-def get_bucket_name(domain):
-    return domain.split(".")[0]
-
-
-def generate_private_key(
-    key_size: int,
-    public_exponent: int = PUBLIC_EXPONENT,
-) -> rsa.RSAPrivateKeyWithSerialization:
-    """
-    Generate an RSA private key with the specified key size and optional public exponent.
-
-    Args:
-    - key_size (int): Size of the key in bits.
-    - public_exponent (int): Public exponent value. Default is set to PUBLIC_EXPONENT.
-
-    Returns:
-    - rsa.RSAPrivateKeyWithSerialization: Generated RSA private key.
-    """
-    logging.info("Generating %d-bit RSA private key", key_size)
-    private_key = rsa.generate_private_key(
-        public_exponent=public_exponent, key_size=key_size
-    )
-
-    return private_key
-
-
-def generate_csr(
-    domain: str,
-    private_key: rsa.RSAPrivateKeyWithSerialization,
-) -> x509.CertificateSigningRequest:
-    """
-    Generate a Certificate Signing Request (CSR) for the specified S3 domain.
-
-    Args:
-    - domain (str): S3 domain for which the CSR is generated.
-    - private_key (rsa.RSAPrivateKeyWithSerialization): RSA private key.
-
-    Returns:
-    - x509.CertificateSigningRequest: Generated CSR.
-    """
-    logging.info("Creating CSR for %s", domain)
-    return (
-        x509.CertificateSigningRequestBuilder()
-        .subject_name(
-            x509.Name(
-                [
-                    x509.NameAttribute(NameOID.COMMON_NAME, domain),
-                ]
-            )
-        )
-        .add_extension(
-            x509.SubjectAlternativeName(
-                [
-                    x509.DNSName(domain),
-                ]
-            ),
-            critical=False,
-        )
-        .sign(private_key, hashes.SHA256())
-    )
+logger = logging.getLogger(__name__)
 
 
 def register_acme_account(
-    acme_client: acme.AcmeClient,
-    acme_agree_tos: bool,
-) -> acme.Account | None:
+    acme_client: acme.AcmeClient, acme_agree_tos: bool
+) -> models.Account | None:
     """
-    Register an ACME account with the specified client.
+    Register an ACME account.
 
     Args:
-    - acme_client (acme.AcmeClient): ACME client for registration.
-    - acme_agree_tos (bool): Whether to agree to the terms of service.
+        acme_client: ACME client for registration.
+        acme_agree_tos: Whether to agree to the terms of service.
 
     Returns:
-    - Union[acme.Account, int]: ACME account or an error code.
+        models.Account | None: ACME account or None on failure.
     """
-    logging.info("Registering account")
+    logger.info("Registering ACME account")
     try:
-        account = acme_client.new_account(
-            terms_of_service_agreed=acme_agree_tos,
-        )
+        account = acme_client.new_account(terms_of_service_agreed=acme_agree_tos)
+        if not account:
+            logger.error("Failed to create ACME account")
+            return None
+        return account
     except requests.HTTPError as e:
-        logging.error(f"Failed to create account: {e.response.text}")
+        logger.error(f"Failed to create ACME account: {e}")
         return None
-    logging.debug("account: %s", account)
-
-    return account
-
-
-def register_order(
-    acme_client: acme.AcmeClient,
-    domains: list[str],
-) -> acme.Order | None:
-    """
-    Register a new order for the specified domains.
-
-    Args:
-    - acme_client (acme.AcmeClient): ACME client for order registration.
-    - domains (list[str]): List of domain names.
-
-    Returns:
-    - acme.Order | None: ACME order or None if failed.
-    """
-    logging.info("Creating new order for %s", domains)
-    try:
-        order = acme_client.new_order(domains)
-        logging.debug("Order created successfully: %s", order)
-        return order
-    except requests.HTTPError as e:
-        logging.error(f"Failed to create order: {e.response.text}")
-        return None
-
-
-def _create_challenge_request_url(
-    object_storage: linode.LinodeObjectStorageClient,
-    cluster: str,
-    domain: str,
-    obj_name: str,
-) -> str:
-    """
-    Create a signed URL for the specified object in Linode Object Storage.
-
-    Args:
-    - object_storage (LinodeObjectStorageClient): Object storage client.
-    - cluster (str): Linode cluster.
-    - domain (str): Domain for the challenge.
-    - obj_name (str): Object name.
-
-    Returns:
-    - str: The signed URL.
-    """
-    return object_storage.create_object_url(
-        cluster,
-        get_bucket_name(domain),
-        "PUT",
-        obj_name,
-        "text/plain",
-        expires_in=360,
-    )
-
-
-def _delete_challenge_request_url(
-    object_storage: linode.LinodeObjectStorageClient,
-    cluster: str,
-    domain: str,
-    obj_name: str,
-) -> str:
-    """
-    Create a signed URL for deleting the specified object in Linode Object Storage.
-
-    Args:
-    - object_storage (LinodeObjectStorageClient): Object storage client.
-    - cluster (str): Linode cluster.
-    - domain (str): Domain for the challenge.
-    - obj_name (str): Object name.
-
-    Returns:
-    - str: The signed URL.
-    """
-    return object_storage.create_object_url(
-        cluster,
-        get_bucket_name(domain),
-        "DELETE",
-        obj_name,
-        expires_in=360,
-    )
-
-
-def _request_challenge(
-    put_url: str, request_data: str = "", request_headers: dict = {}
-) -> int:
-    """
-    Send a PUT request to the specified URL with optional data and headers.
-
-    Args:
-    - put_url (str): URL for the PUT request.
-    - request_data (str): Data to include in the request.
-    - request_headers (dict): Headers to include in the request.
-
-    Raises:
-    - HTTPError: If the PUT request fails.
-    """
-    try:
-        response = requests.put(put_url, data=request_data, headers=request_headers)
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        logging.error(f"Failed to create challenge resource: {e.response.text}")
-        return 1
-    return 0
-
-
-def _validate_challenge_response(domain: str, obj_name: str) -> int:
-    """
-    Validate that the challenge response is accessible via a HEAD request.
-
-    Args:
-    - domain (str): Domain for the challenge.
-    - obj_name (str): Object name.
-
-    Raises:
-    - HTTPError: If the HEAD request fails.
-    """
-    try:
-        requests.head(urlunsplit(("http", domain, obj_name, "", ""))).raise_for_status()
-    except requests.HTTPError as e:
-        logging.error(f"Failed to read challenge: {e}")
-        return 1
-    return 0
-
-
-def _respond_to_challenge(challenge: acme.Challenge, account: acme.Account) -> int:
-    """
-    Respond to the challenge and poll until it's not in the "processing" state.
-
-    Args:
-    - challenge (Challenge): ACME challenge.
-    - account (Account): ACME account.
-
-    Raises:
-    - HTTPError: If responding to the challenge fails.
-    """
-    try:
-        challenge.respond()
-        challenge.poll_until_not({"processing"})
-    except requests.HTTPError as e:
-        logging.error(f"Responding to challenge failed: {e.response.text}")
-        return 1
-
-    if challenge.status != "valid":
-        logging.error(f"Challenge unsuccessful: {challenge.status}")
-        return 1
-
-    return 0
-
-
-def _cleanup_challenge(
-    object_storage: linode.LinodeObjectStorageClient,
-    cluster: str,
-    domain: str,
-    obj_name: str,
-) -> int:
-    """
-    Clean up the challenge resource by sending a DELETE request to the specified URL.
-
-    Args:
-    - object_storage (LinodeObjectStorageClient): Object storage client.
-    - cluster (str): Linode cluster.
-    - domain (str): Domain for the challenge.
-    - obj_name (str): Object name.
-
-    Raises:
-    - HTTPError: If the DELETE request fails.
-    """
-    try:
-        delete_url = _delete_challenge_request_url(
-            object_storage, cluster, domain, obj_name
-        )
-        _request_challenge(delete_url)
-    except requests.HTTPError as e:
-        logging.warning(f"Failed to cleanup challenge resource: {e.response.text}")
-        return 1
-
-    return 0
-
-
-def create_challenge_resource(
-    object_storage: linode.LinodeObjectStorageClient,
-    cluster: str,
-    domain: str,
-    challenge: acme.Challenge,
-    account: acme.Account,
-) -> int:
-    """
-    Create a challenge resource for ACME authorization.
-
-    Args:
-    - object_storage (LinodeObjectStorageClient): Object storage client.
-    - cluster (str): Linode cluster.
-    - domain (str): Domain for the challenge.
-    - challenge (Challenge): ACME challenge.
-    - account (Account): ACME account.
-    """
-    obj_name = f'/.well-known/acme-challenge/{quote(challenge["token"])}'
-    url = _create_challenge_request_url(object_storage, cluster, domain, obj_name)
-    data = f'{challenge["token"]}.{account.key_thumbprint}'
-    headers = {"Content-Type": "text/plain"}
-
-    _request_challenge(url, data, headers)
-
-    try:
-        if object_storage.get_object(cluster, get_bucket_name(domain), obj_name) == 1:
-            return 1
-
-        if _validate_challenge_response(domain, obj_name) == 1:
-            return 1
-
-        if _respond_to_challenge(challenge, account) == 1:
-            return 1
-
-    finally:
-        if _cleanup_challenge(object_storage, cluster, domain, obj_name) == 1:
-            return 1
-
-    return 0
-
-
-def _poll_order_until_not(order: acme.Order, step: dict) -> int:
-    """
-    Poll the ACME order until it is no longer in the 'pending' state.
-
-    Args:
-    - order (Order): ACME order to be polled.
-
-    Raises:
-    - requests.HTTPError: If polling encounters an HTTP error.
-    """
-    try:
-        order.poll_until_not(step)
-    except requests.HTTPError as e:
-        logging.error(f"Failed to poll order status: {e.response.text}")
-        return 1
-
-    return 0
-
-
-def _finalize_order(order: acme.Order, csr: x509.CertificateSigningRequest) -> int:
-    """
-    Finalize an ACME order with the provided CSR.
-
-    Args:
-    - order (Order): ACME order to be finalized.
-    - csr (x509.CertificateSigningRequest): CSR for finalization.
-
-    Raises:
-    - requests.HTTPError: If finalization encounters an HTTP error.
-    """
-    if _poll_order_until_not(order, {"pending"}) == 1:
-        return 1
-
-    try:
-        order.finalize(csr)
-    except requests.HTTPError as e:
-        logging.error(f"Failed to finalize order: {e.response.text}")
-        return 1
-
-    if _poll_order_until_not(order, {"processing"}) == 1:
-        return 1
-
-    return 0
-
-
-def _get_certificate(order: acme.Order) -> str:
-    """
-    Retrieve the certificate associated with the finalized ACME order.
-
-    Args:
-    - order (Order): Finalized ACME order.
-
-    Returns:
-    - str: Certificate content.
-
-    Raises:
-    - requests.HTTPError: If fetching the certificate encounters an HTTP error.
-    """
-    try:
-        return order.certificate()
-    except requests.HTTPError as e:
-        logging.error(f"Failed to fetch certificate: {e.response.text}")
-        raise
-
-
-def finalize_order(order: acme.Order, csr: x509.CertificateSigningRequest) -> str:
-    """
-    Finalize an ACME order with the provided CSR.
-
-    Args:
-    - order (Order): ACME order to be finalized.
-    - csr (x509.CertificateSigningRequest): CSR for finalization.
-
-    Returns:
-    - Union[str, int]: Certificate or error code.
-    """
-    logging.info("Finalizing order")
-    if _finalize_order(order, csr) == 1:
-        return 1
-
-    if order.status != "valid":
-        logging.error(f"Finalize unsuccessful: {order.status}")
-        return 1
-
-    try:
-        return _get_certificate(order)
-    except requests.HTTPError as e:
-        logging.error(f"ERROR: Failed to fetch certificate: {e.response.text}")
-        return 1
-
-
-def update_certificates(
-    object_storage: linode.LinodeObjectStorageClient,
-    cluster: str,
-    domain: str,
-    private_key: rsa.RSAPrivateKeyWithSerialization,
-    certificate: str,
-) -> int:
-    """
-    Update SSL certificates on the object storage.
-
-    Args:
-    - object_storage (linode.LinodeObjectStorageClient): Object storage client.
-    - args (argparse.Namespace): Command-line arguments.
-    - private_key (rsa.RSAPrivateKeyWithSerialization): RSA private key.
-    - certificate (str): SSL certificate.
-
-    Returns:
-    - int | None: Error code or None if successful.
-    """
-    try:
-        object_storage.delete_ssl(cluster, domain)
-    except requests.HTTPError as e:
-        logging.error(f"Failed to delete old certificate: {e.response.text}")
-        return 1
-
-    private_key_pem = private_key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.TraditionalOpenSSL,
-        serialization.NoEncryption(),
-    ).decode("ascii")
-
-    try:
-        object_storage.upload_ssl(
-            cluster, get_bucket_name(domain), certificate, private_key_pem
-        )
-    except requests.HTTPError as e:
-        logging.error(f"Failed to create certificate: {e.response.text}")
-        return 1
-
-    return 0
 
 
 def perform_authorizations(
-    object_storage: "linode.LinodeObjectStorageClient",
-    domain: str,
-    cluster: str,
-    order: acme.Order,
-    account: acme.Account,
-) -> int:
+    object_storage: linode.LinodeObjectStorageClient,
+    bucket: dict[str, Any],
+    order: models.Order,
+    account: models.Account,
+) -> bool:
     """
-    Perform authorizations for an ACME order.
+    Perform ACME authorizations for an order.
 
     Args:
-    - object_storage (linode.LinodeObjectStorageClient): Object storage client.
-    - args (argparse.Namespace): Command-line arguments.
-    - order (acme.Order): ACME order.
-    - account (acme.Account): ACME account.
+        object_storage: Object storage client.
+        bucket: Bucket information.
+        order: ACME order.
+        account: ACME account.
 
     Returns:
-    - int | None: Error code or None if successful.
+        bool: True if successful, False otherwise.
     """
-    logging.info("Performing authorizations")
-
-    order.update()
+    logger.info("Performing authorizations")
 
     for authorization in order.authorizations:
-        for challenge in authorization.challenges:
-            if challenge.type in SUPPORTED_CHALLENGES:
-                break
-        else:
-            logging.error("No supported challenges")
-            return 1
+        # Find a supported challenge
+        challenge = find_supported_challenge(authorization)
+        if not challenge:
+            return False
 
-        create_challenge_resource(object_storage, cluster, domain, challenge, account)
+        # Process the challenge
+        try:
+            process_challenge(object_storage, bucket, challenge, account)
+        except Exception as e:
+            logger.error(f"Failed to process challenge: {e}")
+            return False
 
-    return 0
+    return True
 
 
 def register_and_update_cert(
-    acme: acme.AcmeClient,
+    acme_client: acme.AcmeClient,
     object_storage: linode.LinodeObjectStorageClient,
-    cluster: str,
-    domains: str,
+    bucket: dict[str, Any],
     csr: x509.CertificateSigningRequest,
     private_key: rsa.RSAPrivateKeyWithSerialization,
-    account: acme.Account,
+    account: models.Account,
 ) -> int:
     """
-    Registers an ACME account, performs authorizations, finalizes an order, and updates certificates.
+    Complete certificate registration and upload workflow.
 
     Args:
-        acme (acme.AcmeClient): The ACME client for interaction.
-        object_storage (linode.LinodeObjectStorageClient): Object storage client.
-        args (argparse.Namespace): Command-line arguments.
-        csr (x509.CertificateSigningRequest): Certificate Signing Request for the order.
-        private_key (rsa.RSAPrivateKeyWithSerialization): RSA private key for certificate generation.
-        account (acme.Account): ACME account.
+        acme_client: ACME client.
+        object_storage: Object storage client.
+        bucket: Bucket information.
+        csr: Certificate Signing Request.
+        private_key: Private key for certificate.
+        account: ACME account.
 
     Returns:
-        int: 0 if successful, 1 if any step fails.
+        int: 0 if successful, 1 on failure.
     """
+    try:
+        # Validate bucket
+        is_valid, error_msg = validate_bucket_for_ssl(bucket)
+        if not is_valid:
+            logger.error(error_msg)
+            return 1
 
-    order = acme.new_order([domains])
+        # Create ACME order
+        # Include bucket hostname in order if it differs from custom domain
+        additional_domains = []
+        bucket_hostname = bucket.get("bucket_hostname")
+        if bucket_hostname and bucket_hostname != bucket["hostname"]:
+            additional_domains.append(bucket_hostname)
+            logger.info(f"Creating ACME order for domains: {bucket['hostname']}, {bucket_hostname}")
+        else:
+            logger.info(f"Creating ACME order for domain: {bucket['hostname']}")
 
-    if perform_authorizations(object_storage, cluster, domain, order, account) == 1:
+        order = acme_client.new_order(bucket["hostname"], additional_domains if additional_domains else None)
+        if not order:
+            logger.error(f"Failed to create ACME order for {bucket['hostname']}")
+            return 1
+
+        # Perform authorizations
+        logger.info(f"Performing authorizations for {bucket['hostname']}")
+        if not perform_authorizations(object_storage, bucket, order, account):
+            logger.error(f"Authorization failed for {bucket['hostname']}")
+            return 1
+
+        # Finalize order
+        logger.info(f"Finalizing order for {bucket['hostname']}")
+        certificate = finalize_order(order, csr)
+        if not certificate:
+            logger.error(f"Failed to finalize order for {bucket['hostname']}")
+            return 1
+
+        # Upload certificate
+        logger.info(f"Uploading certificate for {bucket['hostname']}")
+        if not upload_certificate(object_storage, bucket, certificate, private_key):
+            logger.error(f"Failed to upload certificate for {bucket['hostname']}")
+            return 1
+
+        logger.info(
+            f"Successfully registered and updated certificate for {bucket['hostname']}"
+        )
+        return 0
+
+    except Exception as e:
+        logger.exception(f"Unexpected error in certificate workflow: {e}")
         return 1
 
-    logging.info("Finalizing order")
-
-    certificate = finalize_order(order, csr)
-
-    if certificate == 1:
-        return 1
-
-    if (
-        update_certificates(object_storage, cluster, domain, private_key, certificate)
-        == 1
-    ):
-        return 1
-
-    return 0

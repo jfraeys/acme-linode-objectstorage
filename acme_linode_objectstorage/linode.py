@@ -1,15 +1,17 @@
-#!/usr/bin/env python3
 """
 Linode API client.
 
 See https://www.linode.com/docs/api/.
 """
-from typing import Any
 
+import logging
+from typing import Any, Union
 from urllib.parse import quote, urljoin
 
 import requests
 import requests.auth
+
+logging.getLogger(__name__)
 
 LINODE_API = "https://api.linode.com/"
 
@@ -22,239 +24,328 @@ class LinodeObjectStorageClient:
 
     Attributes:
         http (requests.Session): A session object for making HTTP requests.
+        dry_run (bool): If True, allow GET/HEAD but mock POST/PUT/DELETE requests.
     """
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, dry_run: bool = False) -> None:
         self.http = requests.Session()
         self.http.auth = BearerAuth(token)
+        self.dry_run = dry_run
 
     def __enter__(self):
+        try:
+            res = self.http.get(LINODE_API)
+            res.raise_for_status()
+            logging.info(f"Ping Response from {LINODE_API}: {res.json()}")
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Request error: {e}")
+            raise
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.http.close()
 
-    def list_buckets(
-        self,
-        cluster: str = "",
-        created: str = "",
-        hostname: str = "",
-        label: str = "",
-        objects: str = "",
-        size: str = "",
-        page: int = 1,  # Default to the first page
-    ) -> list[dict[str, Any]]:
+    def close(self) -> None:
         """
-        Retrieves a list of buckets based on specified parameters.
+        Closes the HTTP session.
+        """
+        self.__exit__(None, None, None)
+
+    def add_headers(self, headers: dict[str, str]) -> None:
+        """
+        Adds headers to the HTTP session.
 
         Args:
-            cluster (str): Filter by cluster.
-            created (str): Filter by creation date.
-            hostname (str): Filter by hostname.
-            label (str): Filter by label.
-            objects (int): Filter by the number of objects.
-            size (int): Filter by size.
-            page (int): Page number (default is 1).
+            headers (dict[str, str]): A dictionary of headers to add to the session.
+        """
+        self.http.headers.update(headers)
+
+    def _make_request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """
+        Internal method to make HTTP requests with dry-run support.
+
+        In dry-run mode:
+        - GET and HEAD requests are executed normally
+        - POST, PUT, DELETE requests are logged but not executed
+
+        Args:
+            method (str): HTTP method (GET, POST, PUT, DELETE, HEAD)
+            url (str): URL for the request
+            **kwargs: Additional arguments to pass to requests
 
         Returns:
-            list[dict[str, Any]]: A list of dictionaries representing buckets.
+            requests.Response: Response object (real or mocked)
         """
+        method_upper = method.upper()
+
+        if self.dry_run and method_upper not in ["GET", "HEAD"]:
+            logging.warning(f"[DRY-RUN] Skipping {method_upper} request to {url}")
+            if "json" in kwargs:
+                logging.info(f"[DRY-RUN] Would send payload: {kwargs['json']}")
+            if "data" in kwargs:
+                logging.info(
+                    f"[DRY-RUN] Would send data: {kwargs['data'][:100]}..."
+                    if len(str(kwargs["data"])) > 100
+                    else f"[DRY-RUN] Would send data: {kwargs['data']}"
+                )
+
+            # Return a mock successful response
+            mock_response = requests.Response()
+            mock_response.status_code = 200
+            mock_response._content = b'{"dry_run": true, "success": true}'
+            mock_response.headers["Content-Type"] = "application/json"
+            return mock_response
+
+        # Execute real request for GET/HEAD or when not in dry-run
+        return getattr(self.http, method.lower())(url, **kwargs)
+
+    def list_buckets(
+        self,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        """
+        Retrieves a list of buckets based on specified parameters.
+        """
+        if params is None:
+            params = {}
+
         all_buckets: list[dict[str, Any]] = []
+        page = 1
+        total_pages = 1
 
-        # Build the query parameters based on provided values
-        params = {
-            "page": page,
-            "cluster": cluster,
-            "created": created,
-            "hostname": hostname,
-            "label": label,
-            "objects": objects,
-            "size": size,
-        }
+        url = urljoin(LINODE_API, "v4/object-storage/buckets")
 
-        # Remove None values to avoid unnecessary parameters
-        params = {key: value for key, value in params.items() if value}
+        try:
+            while page <= total_pages:
+                response = self._make_request(
+                    "GET", url, params={**params, "page": page}
+                )
+                response.raise_for_status()
 
-        while True:
-            # Make a request with the current parameters
-            r = self.http.get(
-                urljoin(LINODE_API, "v4/object-storage/buckets/"),
-                params=params,
-                auth=self.http.auth,
+                data = response.json()
+                current_buckets = data.get("data", [])
+                all_buckets.extend(current_buckets)
+
+                total_pages = data.get("pages", page)
+
+                if not current_buckets:
+                    break
+
+                page += 1
+            return all_buckets
+
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Request error while fetching buckets: {e}", exc_info=True)
+        except Exception as e:
+            logging.error(
+                f"Unexpected error while fetching buckets: {e}", exc_info=True
             )
-            r.raise_for_status()
 
-            response = r.json()
-            current_buckets = response.get("data", [])
-
-            # Append the current set of buckets to the overall list
-            all_buckets.extend(current_buckets)
-
-            # Check if there are more buckets to retrieve
-            if (
-                len(current_buckets) < len(response["data"])
-                or page >= response["pages"]
-            ):
-                break  # Break the loop if no more items are available or reached the last page
-
-            # Increment the page for the next page of results
-            params.update({"page": page + 1})
-
-        return all_buckets
+        return []
 
     def create_object_url(
         self,
         cluster: str,
-        bucket: str,
-        method: str,
+        label: str,
         name: str,
+        method: str = "GET",
         content_type: str = "",
         expires_in: int = -1,
     ) -> str:
         """
         Generates a URL for interacting with objects in the specified bucket.
-
-        Args:
-            cluster (str): The cluster to which the bucket belongs.
-            bucket (str): The name of the bucket.
-            name (str): The name of the object.
-            method (str): The HTTP method for interacting with the object.
-            content_type (str | None): The content type of the object (optional).
-            expires_in (int | None): The expiration time for the URL in seconds (optional).
-
-        Returns:
-            str: The generated URL for interacting with the specified object.
         """
         if method not in ["GET", "PUT", "DELETE"]:
             raise ValueError("Method must be one of GET, PUT, or DELETE")
 
-        data = {"method": method, "name": name}
+        payload: dict[str, Union[str, int]] = {"method": method, "name": name}
+
+        if expires_in >= 0:
+            payload["expires_in"] = expires_in
 
         if content_type:
-            data["content_type"] = content_type
-
-        if expires_in != -1:
-            data["expires_in"] = str(expires_in)
+            payload["content_type"] = content_type
 
         url = urljoin(
             LINODE_API,
-            f"v4/object-storage/buckets/{cluster}/{bucket}/object-url",
+            f"v4/object-storage/buckets/{quote(cluster)}/{quote(label)}/object-url",
         )
 
-        r = self.http.post(url, json=data)
-        r.raise_for_status()
+        logging.debug(
+            f"Creating object URL for {method} request to {url} with payload {payload}"
+        )
 
-        response = r.json()
-        return response["url"]
+        try:
+            r = self._make_request("POST", url, json=payload)
+            r.raise_for_status()
+            response = r.json()
+
+            if self.dry_run:
+                # Return a mock URL in dry-run mode
+                return (
+                    f"https://{cluster}.linodeobjects.com/{label}/{name}?dry-run=true"
+                )
+
+            return response["url"]
+        except requests.exceptions.RequestException as e:
+            logging.error(f"HTTP request to generate object URL failed: {e}")
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_detail = e.response.json()
+                    logging.error(f"Error detail from Linode API: {error_detail}")
+                except ValueError:
+                    logging.error(f"Error response body: {e.response.text}")
+
+        return ""
 
     def update_object_acl(
-        self, cluster: str, bucket: str, name: str, acl: str
+        self, cluster: str, label: str, name: str, acl: str
     ) -> dict[str, Any]:
         """
         Updates the Access Control List (ACL) for the specified object.
-
-        Args:
-            cluster (str): The cluster to which the bucket belongs.
-            bucket (str): The name of the bucket.
-            name (str): The name of the object.
-            acl (str): The new Access Control List (ACL) for the object.
-
-        Returns:
-            dict[str, Any]: A dictionary containing information about the updated ACL.
         """
-        data = {"name": name, "acl": acl}
+        payload = {"name": name, "acl": acl}
+
+        logging.debug(f"Updating ACL for object {name} using payload {payload}")
 
         url = urljoin(
             LINODE_API,
-            f"https://api.linode.com/v4/object-storage/buckets/{quote(cluster)}/{quote(bucket)}/object-acl",
+            f"/v4/object-storage/buckets/{quote(cluster)}/{quote(label)}/object-acl",
         )
-        r = self.http.put(url, json=data)
-        r.raise_for_status()
 
-        response = r.json()
-        return response
+        try:
+            r = self._make_request("PUT", url, json=payload)
+            r.raise_for_status()
+            response = r.json()
+            return response
+        except requests.exceptions.RequestException as e:
+            logging.error(
+                f"HTTP request to update object URL failed: {e}", exc_info=True
+            )
 
-    def check_ssl_exists(self, cluster: str, bucket: str) -> bool:
+        return {}
+
+    def check_ssl_exists(self, cluster: str, label: str) -> bool:
         """
-        Checks if SSL is configured for the specified bucket.
-
-        Args:
-            cluster (str): The cluster to which the bucket belongs.
-            bucket (str): The name of the bucket.
-
-        Returns:
-            bool: True if SSL is configured, False otherwise.
+        Checks if SSL is configured for the specified label.
         """
         url = urljoin(
             LINODE_API,
-            f"v4/object-storage/buckets/{quote(cluster)}/{quote(bucket)}/ssl",
+            f"v4/object-storage/buckets/{quote(cluster)}/{quote(label)}/ssl",
         )
-        r = self.http.get(url)
-        r.raise_for_status()
 
-        response = r.json()
+        try:
+            r = self._make_request("GET", url)
+            r.raise_for_status()
+            response = r.json()
+            return "ssl" in response
+        except requests.exceptions.RequestException as e:
+            logging.error(
+                f"HTTP request to check ssl exists failed: {e}", exc_info=True
+            )
 
-        return "ssl" in response
+        return False
 
-    def upload_ssl(
-        self, cluster: str, bucket: str, certificate: str, private_key: str
-    ) -> bool:
+    def get_ssl(self, cluster: str, label: str) -> dict[str, Any]:
         """
-        Uploads SSL certificate and private key for the specified bucket.
-
+        Retrieves SSL configuration for the specified bucket.
         Args:
-            cluster (str): The cluster to which the bucket belongs.
-            bucket (str): The name of the bucket.
-            certificate (str): The SSL certificate.
-            private_key (str): The private key corresponding to the certificate.
-
+            cluster (str): The cluster name.
+            label (str): The bucket label.
         Returns:
-            None
+            dict[str, Any]: SSL configuration details.
+        Raises:
+            requests.exceptions.RequestException: If the HTTP request fails.
         """
-        data = {"certificate": certificate, "private_key": private_key}
-
         url = urljoin(
             LINODE_API,
-            f"v4/object-storage/buckets/{quote(cluster)}/{quote(bucket)}/ssl",
+            f"v4/object-storage/buckets/{quote(cluster)}/{quote(label)}/ssl",
         )
-        r = self.http.post(url, json=data)
-        r.raise_for_status()
+        try:
+            r = self._make_request("GET", url)
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            logging.error(f"HTTP request to get ssl failed: {e}", exc_info=True)
+        except Exception as e:
+            logging.error(f"Unexpected error: {e}", exc_info=True)
 
-        return "ssl" in r
+        return {}
 
     def create_ssl(
-        self, cluster: str, bucket: str, certificate: str, private_key: str
-    ) -> None:
+        self, cluster: str, label: str, certificate: str, private_key: str
+    ) -> bool:
         """
         Creates SSL configuration for the specified bucket.
 
-        Args:
-            cluster (str): The cluster to which the bucket belongs.
-            bucket (str): The name of the bucket.
-            certificate (str): The SSL certificate.
-            private_key (str): The private key corresponding to the certificate.
+        Raises:
+            requests.exceptions.HTTPError: If the HTTP request fails.
+        """
+        payload = {
+            "certificate": certificate,
+            "private_key": private_key,
+            "source": "custom",
+        }
 
-        Returns:
-            None
+        url = urljoin(
+            LINODE_API,
+            f"v4/object-storage/buckets/{quote(cluster)}/{quote(label)}/ssl",
+        )
+
+        if self.dry_run:
+            logging.info("[DRY-RUN] Certificate preview (first 100 chars):")
+            logging.info(f"[DRY-RUN] {certificate[:100]}...")
+
+        r = self._make_request("POST", url, json=payload)
+
+        # Log detailed error before raising
+        if r.status_code >= 400:
+            try:
+                error_detail = r.json()
+                logging.error(f"Error detail from Linode API: {error_detail}")
+            except ValueError:
+                logging.error(f"Error response body: {r.text}")
+
+        r.raise_for_status()
+        response = r.json()
+
+        return "ssl" in response or self.dry_run
+
+    def upload_ssl(
+        self, cluster: str, label: str, certificate: str, private_key: str
+    ) -> bool:
+        """
+        Uploads SSL certificate and private key for the specified label.
         """
         data = {"certificate": certificate, "private_key": private_key}
 
         url = urljoin(
             LINODE_API,
-            f"v4/object-storage/buckets/{quote(cluster)}/{quote(bucket)}/ssl",
+            f"v4/object-storage/buckets/{quote(cluster)}/{quote(label)}/ssl",
         )
-        r = self.http.post(url, json=data)
+        r = self._make_request("POST", url, json=data)
         r.raise_for_status()
 
-    def delete_ssl(self, cluster: str, bucket: str) -> bool:
+        return "ssl" in r.json() or self.dry_run
+
+    def delete_ssl(self, cluster: str, label: str) -> bool:
+        """
+        Deletes SSL configuration for the specified bucket.
+        """
         url = urljoin(
             LINODE_API,
-            f"v4/object-storage/buckets/{quote(cluster)}/{quote(bucket)}/ssl",
+            f"v4/object-storage/buckets/{quote(cluster)}/{quote(label)}/ssl",
         )
-        r = self.http.delete(url)
-        r.raise_for_status()
 
-        return {} in r
+        try:
+            r = self._make_request("DELETE", url)
+            r.raise_for_status()
+            response = r.json()
+            return response == {} or self.dry_run
+        except requests.exceptions.RequestException as e:
+            logging.error(f"HTTP request to delete ssl failed: {e}", exc_info=True)
+
+        return False
 
 
 class BearerAuth(requests.auth.AuthBase):
@@ -274,7 +365,7 @@ class BearerAuth(requests.auth.AuthBase):
         Args:
             token (str): The Bearer token used for authentication.
         """
-        self.token = token
+        self._token = token
 
     def __call__(self, r: requests.Request) -> requests.Request:
         """
@@ -286,5 +377,5 @@ class BearerAuth(requests.auth.AuthBase):
         Returns:
             requests.Request: The modified request.
         """
-        r.headers["Authorization"] = f"Bearer {self.token}"
+        r.headers["Authorization"] = f"Bearer {self._token}"
         return r

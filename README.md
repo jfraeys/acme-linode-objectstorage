@@ -41,7 +41,8 @@ with Read/Write permission to Object Storage.
 
 3. Store your Linode API token securely:
     - Create a secrets directory in your project.
-    - Inside the secrets directory, create a text file named LINODE_TOKEN and add your Linode API token:
+    - Inside the secrets directory, create a text file named
+        LINODE\_TOKEN and add your Linode API token:
 
     ```bash
     YOUR_LINODE_TOKENE
@@ -53,12 +54,9 @@ with Read/Write permission to Object Storage.
     python3 -m acme_linode_objectstorage -k account_key.pem my.bucket.domain
     ```
 
-    The Object Storage cluster can be specified with the `--cluster` flag (default: `us-east-1`).
-    
     If this is the first time running the script, you will also need to include the
     `--agree-to-terms-of-service` flag to indicate agreement with the
     [Let's Encrypt Terms of Service](https://letsencrypt.org/documents/LE-SA-v1.2-November-15-2017.pdf).
-
 
 Certificates are typically valid for 90-days. This script should be re-run approximately
 30-days prior to certificate expiration.
@@ -66,5 +64,4 @@ Certificates are typically valid for 90-days. This script should be re-run appro
 # License
 
 Licenced under the MIT License. See [LICENSE](LICENSE) for details.
-
 
