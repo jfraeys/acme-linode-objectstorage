@@ -50,11 +50,38 @@ def test_check_ssl_exists(client):
         cluster = "test-cluster"
         label = "test-bucket"
         url = f"{LINODE_API}v4/object-storage/buckets/{cluster}/{label}/ssl"
-        m.post(url, json={"ssl": True})
+        # check_ssl_exists uses GET, not POST
+        m.get(url, json={"ssl": True})
 
         ssl_exists = client.check_ssl_exists(cluster, label)
 
-        assert ssl_exists
+        assert ssl_exists is True
+
+
+def test_check_ssl_not_exists(client):
+    with requests_mock.Mocker() as m:
+        cluster = "test-cluster"
+        label = "test-bucket"
+        url = f"{LINODE_API}v4/object-storage/buckets/{cluster}/{label}/ssl"
+        # Return empty response (no ssl key)
+        m.get(url, json={})
+
+        ssl_exists = client.check_ssl_exists(cluster, label)
+
+        assert ssl_exists is False
+
+
+def test_get_ssl(client):
+    with requests_mock.Mocker() as m:
+        cluster = "test-cluster"
+        label = "test-bucket"
+        url = f"{LINODE_API}v4/object-storage/buckets/{cluster}/{label}/ssl"
+        m.get(url, json={"ssl": True, "certificate": "cert-data"})
+
+        ssl_config = client.get_ssl(cluster, label)
+
+        assert ssl_config["ssl"] is True
+        assert "certificate" in ssl_config
 
 
 def test_create_ssl(client):

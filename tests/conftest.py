@@ -8,9 +8,7 @@ from acme_linode_objectstorage import acme, linode, models
 @pytest.fixture(scope="session")
 def account_key():
     """Fixture to generate a private RSA key for the tests."""
-    return rsa.generate_private_key(
-        public_exponent=65537, key_size=2048, backend=default_backend()
-    )
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
 
 
 @pytest.fixture
@@ -52,9 +50,7 @@ def authorization(acme_client):
     """Fixture to initialize an Authorization instance."""
     data = {
         "identifier": {"type": "dns", "value": "example.com"},
-        "challenges": [
-            {"url": "https://acme-staging-v02.api.letsencrypt.org/acme/chall/1"}
-        ],
+        "challenges": [{"url": "https://acme-staging-v02.api.letsencrypt.org/acme/chall/1"}],
     }
     return models.Authorization(
         acme_client, "https://acme-staging-v02.api.letsencrypt.org/acme/authz/1", data
@@ -81,3 +77,12 @@ def token():
 @pytest.fixture
 def client(token):
     return linode.LinodeObjectStorageClient(token)
+
+
+@pytest.fixture
+def requests_mock():
+    """Fixture for requests-mock."""
+    import requests_mock as rm
+
+    with rm.Mocker() as m:
+        yield m
