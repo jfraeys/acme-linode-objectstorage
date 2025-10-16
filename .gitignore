@@ -18,9 +18,9 @@ env/
 .pytest_cache/
 .coverage
 coverage.xml
+coverage.jso
 htmlcov/
 .tox/
-coverage.
 
 # IDEs
 .idea/
