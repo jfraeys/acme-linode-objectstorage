@@ -36,7 +36,9 @@ def generate_private_key(
 
 
 def generate_csr(
-    domain: str, private_key: rsa.RSAPrivateKeyWithSerialization, additional_domains: list[str] | None = None
+    domain: str,
+    private_key: rsa.RSAPrivateKeyWithSerialization,
+    additional_domains: list[str] | None = None,
 ) -> x509.CertificateSigningRequest:
     """
     Generate a Certificate Signing Request (CSR).
@@ -149,9 +151,7 @@ def upload_certificate(
     logger.info(f"Certificate chain contains {cert_count} certificate(s)")
 
     # Validate that certificate covers the custom domain
-    is_valid, error, _ = validation.validate_certificate_chain(
-        certificate, bucket["hostname"]
-    )
+    is_valid, error, _ = validation.validate_certificate_chain(certificate, bucket["hostname"])
     if not is_valid:
         logger.error(error)
         return False
@@ -159,13 +159,13 @@ def upload_certificate(
     # Also validate that certificate covers the bucket hostname if it differs
     bucket_hostname = bucket.get("bucket_hostname")
     if bucket_hostname and bucket_hostname != bucket["hostname"]:
-        is_valid, error, _ = validation.validate_certificate_chain(
-            certificate, bucket_hostname
-        )
+        is_valid, error, _ = validation.validate_certificate_chain(certificate, bucket_hostname)
         if not is_valid:
             logger.error(f"Certificate does not cover bucket hostname: {error}")
             return False
-        logger.info(f"Certificate validated successfully for {bucket['hostname']} and {bucket_hostname}")
+        logger.info(
+            f"Certificate validated successfully for {bucket['hostname']} and {bucket_hostname}"
+        )
     else:
         logger.info(f"Certificate validated successfully for {bucket['hostname']}")
 
@@ -184,9 +184,7 @@ def upload_certificate(
     # Upload new certificate
     try:
         private_key_pem = utils.private_key_to_pem(private_key)
-        object_storage.create_ssl(
-            bucket["cluster"], bucket["label"], certificate, private_key_pem
-        )
+        object_storage.create_ssl(bucket["cluster"], bucket["label"], certificate, private_key_pem)
         logger.info(f"Successfully uploaded SSL certificate for {bucket['label']}")
         return True
     except requests.HTTPError as e:

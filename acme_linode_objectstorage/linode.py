@@ -117,9 +117,7 @@ class LinodeObjectStorageClient:
 
         try:
             while page <= total_pages:
-                response = self._make_request(
-                    "GET", url, params={**params, "page": page}
-                )
+                response = self._make_request("GET", url, params={**params, "page": page})
                 response.raise_for_status()
 
                 data = response.json()
@@ -137,9 +135,7 @@ class LinodeObjectStorageClient:
         except requests.exceptions.RequestException as e:
             logging.error(f"Request error while fetching buckets: {e}", exc_info=True)
         except Exception as e:
-            logging.error(
-                f"Unexpected error while fetching buckets: {e}", exc_info=True
-            )
+            logging.error(f"Unexpected error while fetching buckets: {e}", exc_info=True)
 
         return []
 
@@ -171,9 +167,7 @@ class LinodeObjectStorageClient:
             f"v4/object-storage/buckets/{quote(cluster)}/{quote(label)}/object-url",
         )
 
-        logging.debug(
-            f"Creating object URL for {method} request to {url} with payload {payload}"
-        )
+        logging.debug(f"Creating object URL for {method} request to {url} with payload {payload}")
 
         try:
             r = self._make_request("POST", url, json=payload)
@@ -182,9 +176,7 @@ class LinodeObjectStorageClient:
 
             if self.dry_run:
                 # Return a mock URL in dry-run mode
-                return (
-                    f"https://{cluster}.linodeobjects.com/{label}/{name}?dry-run=true"
-                )
+                return f"https://{cluster}.linodeobjects.com/{label}/{name}?dry-run=true"
 
             return response["url"]
         except requests.exceptions.RequestException as e:
@@ -198,9 +190,7 @@ class LinodeObjectStorageClient:
 
         return ""
 
-    def update_object_acl(
-        self, cluster: str, label: str, name: str, acl: str
-    ) -> dict[str, Any]:
+    def update_object_acl(self, cluster: str, label: str, name: str, acl: str) -> dict[str, Any]:
         """
         Updates the Access Control List (ACL) for the specified object.
         """
@@ -219,9 +209,7 @@ class LinodeObjectStorageClient:
             response = r.json()
             return response
         except requests.exceptions.RequestException as e:
-            logging.error(
-                f"HTTP request to update object URL failed: {e}", exc_info=True
-            )
+            logging.error(f"HTTP request to update object URL failed: {e}", exc_info=True)
 
         return {}
 
@@ -240,9 +228,7 @@ class LinodeObjectStorageClient:
             response = r.json()
             return "ssl" in response
         except requests.exceptions.RequestException as e:
-            logging.error(
-                f"HTTP request to check ssl exists failed: {e}", exc_info=True
-            )
+            logging.error(f"HTTP request to check ssl exists failed: {e}", exc_info=True)
 
         return False
 
@@ -272,9 +258,7 @@ class LinodeObjectStorageClient:
 
         return {}
 
-    def create_ssl(
-        self, cluster: str, label: str, certificate: str, private_key: str
-    ) -> bool:
+    def create_ssl(self, cluster: str, label: str, certificate: str, private_key: str) -> bool:
         """
         Creates SSL configuration for the specified bucket.
 
@@ -311,9 +295,7 @@ class LinodeObjectStorageClient:
 
         return "ssl" in response or self.dry_run
 
-    def upload_ssl(
-        self, cluster: str, label: str, certificate: str, private_key: str
-    ) -> bool:
+    def upload_ssl(self, cluster: str, label: str, certificate: str, private_key: str) -> bool:
         """
         Uploads SSL certificate and private key for the specified label.
         """

@@ -209,9 +209,7 @@ def process_challenge(
         upload_challenge_file(put_url, key_auth)
 
         # 2. Make it publicly accessible
-        make_challenge_public(
-            object_storage, bucket["cluster"], bucket["label"], obj_name
-        )
+        make_challenge_public(object_storage, bucket["cluster"], bucket["label"], obj_name)
 
         # 3. Verify it's accessible
         verify_challenge_accessible(bucket["hostname"], obj_name)

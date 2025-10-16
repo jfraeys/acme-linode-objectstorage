@@ -1,28 +1,21 @@
 #!/usr/bin/env python3
+"""
+Command-line interface for ACME Linode Object Storage.
+"""
 
 import argparse
-import asyncio
 import logging
 import os
 import re
+import sys
 from pathlib import Path
-from typing import Any
 
-import dns.resolver
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from acme_linode_objectstorage import utils
+from acme_linode_objectstorage.core import AcmeLinodeManager
 
-from acme_linode_objectstorage import acme, exceptions, linode, utils
-from acme_linode_objectstorage.certificate import generate_csr, generate_private_key
-from acme_linode_objectstorage.ssl import (
-    register_acme_account,
-    register_and_update_cert,
-)
+logger = logging.getLogger(__name__)
 
-logging.getLogger(__name__)
-
-USER_AGENT = "acme-linode-objectstorage"
-KEY_SIZE = 2048
+USER_AGENT = "acme-linode-objectstorage-cli"
 
 
 def get_linode_token(linode_token_env_var: str = "LINODE_API_TOKEN") -> str:
@@ -52,11 +45,9 @@ def get_linode_token(linode_token_env_var: str = "LINODE_API_TOKEN") -> str:
     # Validate token format (basic check)
     token = token.strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{40,100}", token):
-        raise ValueError(
-            f"{linode_token_env_var} appears to be invalid (wrong format or length)"
-        )
+        raise ValueError(f"{linode_token_env_var} appears to be invalid (wrong format or length)")
 
-    logging.debug(f"Using Linode token: {token[:8]}..." if token else "No token found")
+    logger.debug(f"Using Linode token: {token[:8]}..." if token else "No token found")
     return token
 
 
@@ -111,9 +102,7 @@ Note: Domains must have CNAME records pointing to Linode Object Storage buckets
         help="Bucket label (optional). If not provided, will be auto-discovered via DNS. "
         "If provided, must match the order of --domain flags.",
     )
-    parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Enable verbose logging"
-    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -143,373 +132,41 @@ def configure_logging(verbose: bool) -> None:
         verbose: If True, enable DEBUG logging; otherwise INFO.
     """
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(
+        level=level, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
 
 
-def load_account_key(account_key_file: Path) -> rsa.RSAPrivateKey | None:
-    """
-    Loads an RSA private key from a PEM file.
-
-    Args:
-        account_key_file: Path to the private key file.
-
-    Returns:
-        rsa.RSAPrivateKey | None: The loaded private key, or None if loading fails.
-    """
-    try:
-        key_data = account_key_file.read_bytes()
-        account_key = serialization.load_pem_private_key(key_data, password=None)
-
-        if not isinstance(account_key, rsa.RSAPrivateKey):
-            raise TypeError(f"Invalid account key type: {type(account_key)}")
-
-        return account_key
-
-    except FileNotFoundError:
-        logging.error(f"Key file not found: {account_key_file}")
-    except ValueError as e:
-        logging.error(f"Invalid key format in {account_key_file}: {e}")
-    except Exception as e:
-        logging.error(f"Unexpected error loading key from {account_key_file}: {e}")
-
-    return None
-
-
-def discover_bucket_from_dns(domain: str) -> tuple[str | None, str | None]:
-    """
-    Discover the Linode bucket name and cluster from DNS CNAME records.
-
-    Args:
-        domain: Custom domain name (e.g., cdn.example.com)
-
-    Returns:
-        tuple[str | None, str | None]: (bucket_label, cluster) or (None, None) if not found
-
-    Example:
-        cdn.example.com → CNAME → bucket1.us-east-1.linodeobjects.com
-        Returns: ('bucket1', 'us-east-1')
-    """
-    try:
-        logging.debug(f"Looking up DNS records for: {domain}")
-
-        # Query CNAME records
-        answers = dns.resolver.resolve(domain, "CNAME")
-
-        for rdata in answers:
-            cname = str(rdata.target).rstrip(".")
-            logging.debug(f"Found CNAME: {domain} → {cname}")
-
-            # Parse Linode Object Storage hostname
-            # Expected format: bucket-name.region.linodeobjects.com
-            match = re.match(r"^([^.]+)\.([^.]+)\.linodeobjects\.com$", cname)
-
-            if match:
-                bucket_label = match.group(1)
-                cluster = match.group(2)
-                logging.info(
-                    f"Discovered bucket '{bucket_label}' in cluster '{cluster}' for domain '{domain}'"
-                )
-                return (bucket_label, cluster)
-            else:
-                logging.warning(
-                    f"CNAME '{cname}' doesn't match Linode Object Storage format"
-                )
-
-        logging.warning(f"No Linode Object Storage CNAME found for: {domain}")
-        return (None, None)
-
-    except dns.resolver.NXDOMAIN:
-        logging.error(f"Domain does not exist: {domain}")
-        return (None, None)
-    except dns.resolver.NoAnswer:
-        logging.error(f"No CNAME record found for: {domain}")
-        return (None, None)
-    except Exception as e:
-        logging.error(f"DNS lookup failed for {domain}: {e}")
-        return (None, None)
-
-
-def find_bucket_by_label(
-    object_storage: linode.LinodeObjectStorageClient, label: str
-) -> dict[str, Any] | None:
-    """
-    Find a bucket by its label.
-
-    Args:
-        object_storage: Linode object storage client.
-        label: Bucket label to find.
-
-    Returns:
-        dict[str, Any] | None: Bucket information or None if not found.
-    """
-    bucket_list = object_storage.list_buckets()
-    return next((b for b in bucket_list if b.get("label") == label), None)
-
-
-def create_domain_bucket_mapping(
-    object_storage: linode.LinodeObjectStorageClient,
+def create_domain_configs(
     domains: list[str],
     bucket_labels: list[str] | None = None,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, str]]:
     """
-    Create a mapping of custom domains to their buckets.
+    Create domain configuration list for the manager.
 
     Args:
-        object_storage: Linode object storage client.
         domains: List of custom domain names.
-        bucket_labels: Optional list of bucket labels. If None, will auto-discover via DNS.
+        bucket_labels: Optional list of bucket labels.
 
     Returns:
-        list[dict[str, Any]]: List of domain-bucket mappings.
+        list[dict[str, str]]: List of domain configurations.
 
     Raises:
-        ValueError: If explicit buckets provided but count doesn't match domains.
-        exceptions.BucketNotFoundError: If a bucket is not found.
+        ValueError: If bucket count doesn't match domain count.
     """
-    # If buckets provided explicitly, validate count matches
-    if bucket_labels is not None and len(domains) != len(bucket_labels):
+    if bucket_labels and len(domains) != len(bucket_labels):
         raise ValueError(
             f"Number of domains ({len(domains)}) must match number of buckets ({len(bucket_labels)})"
         )
 
-    mappings = []
-
+    configs = []
     for i, domain in enumerate(domains):
-        # Determine bucket labeli
+        config = {"domain": domain}
         if bucket_labels and i < len(bucket_labels):
-            # Use explicit bucket label
-            label = bucket_labels[i]
-            logging.debug(f"Using explicit bucket '{label}' for domain '{domain}'")
-        else:
-            # Auto-discover from DNS
-            label, _ = discover_bucket_from_dns(domain)
-            if not label:
-                raise ValueError(
-                    f"Could not discover bucket for domain '{domain}'. "
-                    f"Make sure the domain has a CNAME pointing to a Linode Object Storage bucket, "
-                    f"or provide the bucket explicitly with -b/--bucket."
-                )
+            config["bucket_label"] = bucket_labels[i]
+        configs.append(config)
 
-        # Find the bucket
-        bucket = find_bucket_by_label(object_storage, label)
-        if not bucket:
-            raise exceptions.BucketNotFoundError(label)
-
-        # Create mapping with custom domain
-        mapping = {
-            **bucket,  # Include all original bucket info
-            "custom_domain": domain,  # Add custom domain
-            "bucket_hostname": bucket.get("hostname"),  # Preserve original bucket hostname
-            "hostname": domain,  # Override hostname with custom domain
-        }
-
-        logging.debug(
-            f"Mapped domain '{domain}' to bucket '{label}' "
-            f"(cluster: {bucket.get('cluster')}, endpoint: {bucket.get('endpoint_type')})"
-        )
-
-        mappings.append(mapping)
-
-    return mappings
-
-
-async def process_domain_async(
-    domain_bucket: dict[str, Any],
-    acme_client: acme.AcmeClient,
-    object_storage: linode.LinodeObjectStorageClient,
-    account: Any,
-) -> tuple[str, int]:
-    """
-    Process a single domain to obtain and install SSL certificate (async).
-
-    Args:
-        domain_bucket: Domain-bucket mapping with custom_domain field.
-        acme_client: ACME client.
-        object_storage: Object storage client.
-        account: ACME account.
-
-    Returns:
-        tuple[str, int]: (domain, result_code) where result_code is 0 for success, 1 for failure.
-    """
-    domain = domain_bucket.get("custom_domain")
-    label = domain_bucket.get("label", "unknown")
-
-    if not domain:
-        logging.warning(f"Skipping bucket without custom domain: {label}")
-        return (label, 1)
-
-    logging.info(f"[{domain}] Processing certificate for custom domain")
-    logging.debug(
-        f"[{domain}] Bucket: {label}, cluster: {domain_bucket.get('cluster')}, "
-        f"endpoint: {domain_bucket.get('endpoint_type')}"
-    )
-
-    try:
-        # Run CPU-bound operations in thread pool
-        loop = asyncio.get_event_loop()
-        private_key = await loop.run_in_executor(None, generate_private_key, KEY_SIZE)
-
-        # Include bucket hostname in SAN if it exists and differs from custom domain
-        additional_domains = []
-        bucket_hostname = domain_bucket.get("bucket_hostname")
-        if bucket_hostname and bucket_hostname != domain:
-            additional_domains.append(bucket_hostname)
-
-        csr = await loop.run_in_executor(None, generate_csr, domain, private_key, additional_domains)
-
-        logging.debug(f"[{domain}] Generated CSR")
-
-        # Register and update certificate
-        result = await loop.run_in_executor(
-            None,
-            register_and_update_cert,
-            acme_client,
-            object_storage,
-            domain_bucket,
-            csr,
-            private_key,
-            account,
-        )
-
-        if result != 0:
-            logging.error(f"[{domain}] Certificate registration failed")
-        else:
-            logging.info(f"[{domain}] Successfully updated certificate")
-
-        return (domain, result)
-
-    except Exception as e:
-        logging.exception(f"[{domain}] Unexpected error: {e}")
-        return (domain, 1)
-
-
-def process_domain_sync(
-    domain_bucket: dict[str, Any],
-    acme_client: acme.AcmeClient,
-    object_storage: linode.LinodeObjectStorageClient,
-    account: Any,
-) -> tuple[str, int]:
-    """
-    Process a single domain to obtain and install SSL certificate (synchronous).
-
-    Args:
-        domain_bucket: Domain-bucket mapping with custom_domain field.
-        acme_client: ACME client.
-        object_storage: Object storage client.
-        account: ACME account.
-
-    Returns:
-        tuple[str, int]: (domain, result_code) where result_code is 0 for success, 1 for failure.
-    """
-    domain = domain_bucket.get("custom_domain")
-    label = domain_bucket.get("label", "unknown")
-
-    if not domain:
-        logging.warning(f"Skipping bucket without custom domain: {label}")
-        return (label, 1)
-
-    logging.info(f"Processing certificate for: {domain} (bucket: {label})")
-    logging.debug(
-        f"Domain: {domain}, bucket: {label}, cluster: {domain_bucket.get('cluster')}"
-    )
-
-    # Generate key and CSR for this certificate
-    private_key = generate_private_key(KEY_SIZE)
-
-    # Include bucket hostname in SAN if it exists and differs from custom domain
-    additional_domains = []
-    bucket_hostname = domain_bucket.get("bucket_hostname")
-    if bucket_hostname and bucket_hostname != domain:
-        additional_domains.append(bucket_hostname)
-
-    csr = generate_csr(domain, private_key, additional_domains)
-
-    logging.debug(f"Generated CSR for domain: {domain}")
-
-    # Register and update certificate
-    result = register_and_update_cert(
-        acme_client=acme_client,
-        object_storage=object_storage,
-        bucket=domain_bucket,
-        csr=csr,
-        private_key=private_key,
-        account=account,
-    )
-
-    if result != 0:
-        logging.error(f"Certificate registration failed for: {domain}")
-    else:
-        logging.info(f"Successfully updated certificate for: {domain}")
-
-    return (domain, result)
-
-
-async def process_domains_parallel(
-    domain_buckets: list[dict[str, Any]],
-    acme_client: acme.AcmeClient,
-    object_storage: linode.LinodeObjectStorageClient,
-    account: Any,
-) -> list[tuple[str, int]]:
-    """
-    Process multiple domains in parallel.
-
-    Args:
-        domain_buckets: List of domain-bucket mappings.
-        acme_client: ACME client.
-        object_storage: Object storage client.
-        account: ACME account.
-
-    Returns:
-        list[tuple[str, int]]: List of (domain, result_code) tuples.
-    """
-    logging.info(f"Processing {len(domain_buckets)} domain(s) in parallel")
-
-    tasks = [
-        process_domain_async(db, acme_client, object_storage, account)
-        for db in domain_buckets
-    ]
-
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Handle any exceptions that occurred
-    processed_results: list[tuple[str, int]] = []
-    for i, result in enumerate(results):
-        if isinstance(result, BaseException):
-            domain = domain_buckets[i].get("custom_domain", "unknown")
-            logging.error(f"[{domain}] Task failed with exception: {result}")
-            processed_results.append((domain, 1))
-        else:
-            processed_results.append(result)
-
-    return processed_results
-
-
-def process_domains_sequential(
-    domain_buckets: list[dict[str, Any]],
-    acme_client: acme.AcmeClient,
-    object_storage: linode.LinodeObjectStorageClient,
-    account: Any,
-) -> list[tuple[str, int]]:
-    """
-    Process multiple domains sequentially.
-
-    Args:
-        domain_buckets: List of domain-bucket mappings.
-        acme_client: ACME client.
-        object_storage: Object storage client.
-        account: ACME account.
-
-    Returns:
-        list[tuple[str, int]]: List of (domain, result_code) tuples.
-    """
-    logging.info(f"Processing {len(domain_buckets)} domain(s) sequentially")
-
-    results = []
-    for db in domain_buckets:
-        result = process_domain_sync(db, acme_client, object_storage, account)
-        results.append(result)
-
-    return results
+    return configs
 
 
 def main() -> int:
@@ -523,100 +180,83 @@ def main() -> int:
     configure_logging(args.verbose)
 
     try:
-        # Load Linode token
+        # Get Linode token
         linode_token = get_linode_token()
 
-        # Load account key
-        account_key = load_account_key(Path.cwd().joinpath(args.account_key))
-        if not account_key:
-            logging.error("Failed to load account key")
+        # Validate account key exists
+        account_key_path = Path.cwd() / args.account_key
+        if not account_key_path.exists():
+            logger.error(f"Account key file not found: {account_key_path}")
             return 1
 
-        # Initialize Linode Object Storage client
-        object_storage = linode.LinodeObjectStorageClient(linode_token)
-        object_storage.add_headers({"User-Agent": USER_AGENT})
-
-        # Create domain-bucket mappings (auto-discover if buckets not provided)
-        logging.info(f"Resolving {len(args.domain)} custom domain(s)")
-        domain_buckets = create_domain_bucket_mapping(
-            object_storage, args.domain, args.bucket
-        )
-
-        if not domain_buckets:
-            logging.error("No valid domain-bucket mappings created")
-            return 1
-
-        # Log the mappings
-        logging.info("Domain-bucket mappings:")
-        for db in domain_buckets:
-            logging.info(f"  {db['custom_domain']} → {db['label']}")
-
-        # Initialize ACME client
-        acme_client = acme.AcmeClient(account_key=account_key, dry_run=args.dry_run)
-        acme_client.add_headers({"User-Agent": USER_AGENT})
-
+        # Show dry-run warning
         if args.dry_run:
-            logging.warning("=" * 60)
-            logging.warning("DRY-RUN MODE ENABLED")
-            logging.warning("  - Using ACME staging environment")
-            logging.warning("  - Certificates will NOT be trusted by browsers")
-            logging.warning("  - Use for testing only")
-            logging.warning("=" * 60)
+            logger.warning("=" * 60)
+            logger.warning("DRY-RUN MODE ENABLED")
+            logger.warning("  - Using ACME staging environment")
+            logger.warning("  - Certificates will NOT be trusted by browsers")
+            logger.warning("  - Use for testing only")
+            logger.warning("=" * 60)
 
-        # Register ACME account
-        account = register_acme_account(acme_client, args.tos)
-        if not account:
-            logging.error("Failed to register ACME account")
-            return 1
+        # Create domain configurations
+        logger.info(f"Processing {len(args.domain)} custom domain(s)")
+        domain_configs = create_domain_configs(args.domain, args.bucket)
 
-        # Process domains (parallel or sequential)
-        if args.no_parallel or len(domain_buckets) == 1:
-            # Sequential processing
-            results = process_domains_sequential(
-                domain_buckets, acme_client, object_storage, account
-            )
-        else:
-            # Parallel processing
-            results = asyncio.run(
-                process_domains_parallel(
-                    domain_buckets, acme_client, object_storage, account
-                )
-            )
+        # Initialize the manager
+        logger.info("Initializing ACME Linode Manager")
+        with AcmeLinodeManager(
+            linode_token=linode_token,
+            account_key_path=account_key_path,
+            dry_run=args.dry_run,
+            agree_tos=args.tos,
+            user_agent=USER_AGENT,
+        ) as manager:
+            # Provision certificates
+            parallel = not args.no_parallel and len(domain_configs) > 1
+
+            if parallel:
+                logger.info(f"Processing {len(domain_configs)} domain(s) in parallel")
+            else:
+                logger.info(f"Processing {len(domain_configs)} domain(s) sequentially")
+
+            results = manager.provision_certificates(domain_configs, parallel=parallel)
 
         # Report results
-        logging.info("=" * 60)
-        logging.info("Certificate Update Summary:")
-        failed_domains = []
-        for domain, result_code in results:
-            if result_code == 0:
-                logging.info(f"  ✓ {domain}: SUCCESS")
-            else:
-                logging.error(f"  ✗ {domain}: FAILED")
-                failed_domains.append(domain)
+        logger.info("=" * 60)
+        logger.info("Certificate Update Summary:")
 
-        # Return failure if any domain failed
+        failed_domains = []
+        for result in results:
+            if result.success:
+                logger.info(f"  ✓ {result.domain}: SUCCESS")
+            else:
+                logger.error(f"  ✗ {result.domain}: FAILED")
+                if result.error_message:
+                    logger.error(f"    Error: {result.error_message}")
+                failed_domains.append(result.domain)
+
+        # Final summary
         if failed_domains:
-            logging.error("=" * 60)
-            logging.error(
+            logger.error("=" * 60)
+            logger.error(
                 f"Failed to update {len(failed_domains)} domain(s): {', '.join(failed_domains)}"
             )
             return 1
 
-        logging.info("=" * 60)
-        logging.info(f"All {len(results)} certificate(s) updated successfully")
+        logger.info("=" * 60)
+        logger.info(f"All {len(results)} certificate(s) updated successfully")
         return 0
 
-    except exceptions.BucketNotFoundError as e:
-        logging.error(str(e))
-        return 1
     except ValueError as e:
-        logging.error(str(e))
+        logger.error(str(e))
         return 1
+    except KeyboardInterrupt:
+        logger.warning("\nOperation cancelled by user")
+        return 130
     except Exception as e:
-        logging.exception("Unexpected error: %s", e)
+        logger.exception("Unexpected error: %s", e)
         return 1
 
 
 if __name__ == "__main__":
-    exit(main())
-
+    sys.exit(main())

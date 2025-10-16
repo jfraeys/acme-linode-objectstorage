@@ -120,7 +120,9 @@ def register_and_update_cert(
         else:
             logger.info(f"Creating ACME order for domain: {bucket['hostname']}")
 
-        order = acme_client.new_order(bucket["hostname"], additional_domains if additional_domains else None)
+        order = acme_client.new_order(
+            bucket["hostname"], additional_domains if additional_domains else None
+        )
         if not order:
             logger.error(f"Failed to create ACME order for {bucket['hostname']}")
             return 1
@@ -144,12 +146,9 @@ def register_and_update_cert(
             logger.error(f"Failed to upload certificate for {bucket['hostname']}")
             return 1
 
-        logger.info(
-            f"Successfully registered and updated certificate for {bucket['hostname']}"
-        )
+        logger.info(f"Successfully registered and updated certificate for {bucket['hostname']}")
         return 0
 
     except Exception as e:
         logger.exception(f"Unexpected error in certificate workflow: {e}")
         return 1
-

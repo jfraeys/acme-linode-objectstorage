@@ -12,6 +12,4 @@ class BucketAccessError(Exception):
     def __init__(self, bucket_name, status_code):
         self.bucket_name = bucket_name
         self.status_code = status_code
-        super().__init__(
-            f"Error accessing bucket '{bucket_name}': Status code {status_code}"
-        )
+        super().__init__(f"Error accessing bucket '{bucket_name}': Status code {status_code}")
