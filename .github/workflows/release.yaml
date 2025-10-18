@@ -10,7 +10,7 @@ permissions:
 jobs:
   # Call the CI workflow to ensure all tests pass
   ci:
-    uses: ./.github/workflows/python-ci.yaml
+    uses: ./.github/workflows/ci.yaml
     permissions:
       contents: read
   publish-testpypi:
