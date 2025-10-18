@@ -163,11 +163,30 @@ def upload_certificate(
         if not is_valid:
             logger.error(f"Certificate does not cover bucket hostname: {error}")
             return False
+
+    # For Linode API validation, ensure certificate covers the bucket name
+    bucket_label = bucket.get("label")
+    if bucket_label:
+        is_valid, error, _ = validation.validate_certificate_chain(certificate, bucket_label)
+        if not is_valid:
+            logger.error(f"Certificate does not cover bucket name '{bucket_label}': {error}")
+            logger.error(
+                "This is a known limitation: Linode requires the bucket name in the certificate,"
+            )
+            logger.error(
+                "but ACME cannot issue certificates for bucket names that are not valid domains."
+            )
+            logger.error(
+                "Consider renaming your bucket to a valid domain name, or contact Linode support."
+            )
+            return False
+
+    if bucket_hostname and bucket_hostname != bucket["hostname"]:
         logger.info(
-            f"Certificate validated successfully for {bucket['hostname']} and {bucket_hostname}"
+            f"Certificate validated successfully for {bucket['hostname']}, {bucket_hostname}, and bucket name"
         )
     else:
-        logger.info(f"Certificate validated successfully for {bucket['hostname']}")
+        logger.info(f"Certificate validated successfully for {bucket['hostname']} and bucket name")
 
     # Delete old certificate if exists
     try:

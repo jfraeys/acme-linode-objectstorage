@@ -112,11 +112,17 @@ def register_and_update_cert(
 
         # Create ACME order
         # Include bucket hostname in order if it differs from custom domain
+        # Note: bucket label is NOT included in ACME order as it's not a valid domain
         additional_domains = []
         bucket_hostname = bucket.get("bucket_hostname")
+
         if bucket_hostname and bucket_hostname != bucket["hostname"]:
             additional_domains.append(bucket_hostname)
-            logger.info(f"Creating ACME order for domains: {bucket['hostname']}, {bucket_hostname}")
+
+        if additional_domains:
+            logger.info(
+                f"Creating ACME order for domains: {bucket['hostname']}, {', '.join(additional_domains)}"
+            )
         else:
             logger.info(f"Creating ACME order for domain: {bucket['hostname']}")
 

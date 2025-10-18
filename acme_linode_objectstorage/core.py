@@ -332,9 +332,17 @@ class AcmeLinodeManager:
             # Prepare domains for CSR
             csr_domains = additional_domains or []
             bucket_hostname = bucket.get("bucket_hostname")
+            bucket_label = bucket.get("label")
+
+            # Include bucket hostname if different from custom domain
             if bucket_hostname and bucket_hostname != domain:
                 if bucket_hostname not in csr_domains:
                     csr_domains.append(bucket_hostname)
+
+            # Include bucket label for Linode API validation
+            # Note: This is added to CSR but not ACME order since bucket label is not a valid domain
+            if bucket_label and bucket_label not in csr_domains:
+                csr_domains.append(bucket_label)
 
             logger.debug(f"Creating CSR for domain: {domain}")
             if csr_domains:

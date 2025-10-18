@@ -310,3 +310,49 @@ class TestAcmeLinodeManagerProvision:
         assert len(results) == 1
         assert not results[0].success
         assert "domain" in results[0].error_message.lower()
+
+    @patch("acme_linode_objectstorage.core.generate_csr")
+    @patch("acme_linode_objectstorage.core.generate_private_key")
+    @patch("acme_linode_objectstorage.core.register_acme_account")
+    def test_provision_certificate_includes_bucket_label_in_csr(
+        self, mock_register_account, mock_gen_key, mock_gen_csr, manager
+    ):
+        """Test that certificate provisioning includes bucket label in CSR domains."""
+        # Setup mocks
+        mock_key = Mock()
+        mock_csr = Mock()
+        mock_account = Mock()
+
+        mock_gen_key.return_value = mock_key
+        mock_gen_csr.return_value = mock_csr
+        mock_register_account.return_value = mock_account
+
+        # Mock bucket with label "blizzard" (different from custom domain)
+        mock_bucket = {
+            "label": "blizzard",
+            "hostname": "blizzard.jfraeys.com",
+            "bucket_hostname": "blizzard.us-east-1.linodeobjects.com",
+            "cluster": "us-east-1",
+        }
+
+        # Mock the register_and_update_cert to return success
+        with patch("acme_linode_objectstorage.core.register_and_update_cert", return_value=0):
+            with patch.object(manager, "_resolve_bucket", return_value=mock_bucket):
+                result = manager.provision_certificate("blizzard.jfraeys.com")
+
+        # Verify the certificate was provisioned successfully
+        assert result.success
+        assert result.domain == "blizzard.jfraeys.com"
+        assert result.bucket_label == "blizzard"
+
+        # Verify generate_csr was called with the correct domains
+        # The CSR should include: custom domain, bucket hostname, and bucket label
+        mock_gen_csr.assert_called_once()
+        call_args = mock_gen_csr.call_args
+        domain_arg = call_args[0][0]  # First positional argument (domain)
+        additional_domains_arg = call_args[0][2]  # Third positional argument (additional_domains)
+
+        assert domain_arg == "blizzard.jfraeys.com"
+        assert additional_domains_arg is not None
+        assert "blizzard.us-east-1.linodeobjects.com" in additional_domains_arg
+        assert "blizzard" in additional_domains_arg  # Bucket label should be included
